@@ -8,6 +8,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
+| v1.0.10 | [`v1.0.10`](https://github.com/chainguard-actions/clouatre-labs-setup-goose-action/tree/v1.0.10) | [`017d902`](https://github.com/clouatre-labs/setup-goose-action/commit/017d90271b50e0130dd915840135fed34aa7de36) |
 | v1.0.8 | [`v1.0.8`](https://github.com/chainguard-actions/clouatre-labs-setup-goose-action/tree/v1.0.8) | [`7a86bfb`](https://github.com/clouatre-labs/setup-goose-action/commit/7a86bfba08001947997ed330a60215d871f40f8b) |
 
 ## Privacy
