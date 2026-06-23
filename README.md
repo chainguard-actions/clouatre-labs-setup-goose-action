@@ -1,0 +1,1 @@
+# clouatre-labs-setup-goose-action
