@@ -1,0 +1,83 @@
+name: Test check-latest flag
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Ensure gh CLI is available
+        shell: bash
+        run: |
+          if ! command -v gh &>/dev/null; then
+            echo "Installing gh CLI..."
+            type -p curl >/dev/null || (apt-get update && apt-get install -y curl)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            apt-get update
+            apt-get install -y gh
+          fi
+          gh --version
+
+      - id: action
+        uses: .
+        with:
+          check-latest: 'true'
+
+      - name: Assert goose-version output is set and non-empty
+        env:
+          ACTUAL: ${{ steps.action.outputs.goose-version }}
+        run: |
+          echo "actual goose-version: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: goose-version output is empty when check-latest=true"
+            exit 1
+          fi
+          echo "PASS: goose-version=$ACTUAL"
+
+      - name: Assert goose-version is valid semver
+        env:
+          ACTUAL: ${{ steps.action.outputs.goose-version }}
+        run: |
+          echo "actual goose-version: $ACTUAL"
+          if ! echo "$ACTUAL" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$'; then
+            echo "FAIL: goose-version '$ACTUAL' is not valid semver"
+            exit 1
+          fi
+          echo "PASS: '$ACTUAL' is valid semver"
+
+      - name: Assert goose binary is installed
+        run: |
+          echo "Checking goose binary..."
+          if ! command -v goose &>/dev/null; then
+            echo "FAIL: goose not found in PATH after check-latest install"
+            exit 1
+          fi
+          echo "PASS: goose found at $(command -v goose)"
+
+      - name: Assert goose-path output is set
+        env:
+          ACTUAL: ${{ steps.action.outputs.goose-path }}
+        run: |
+          echo "actual goose-path: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: goose-path output is empty"
+            exit 1
+          fi
+          echo "PASS: goose-path=$ACTUAL"
+
+      - name: Assert cache-hit output is boolean string
+        env:
+          ACTUAL: ${{ steps.action.outputs.cache-hit }}
+        run: |
+          echo "actual cache-hit: $ACTUAL"
+          if [ "$ACTUAL" != "true" ] && [ "$ACTUAL" != "false" ]; then
+            echo "FAIL: cache-hit should be 'true' or 'false', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: cache-hit=$ACTUAL"
