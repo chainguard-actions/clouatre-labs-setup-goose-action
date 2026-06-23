@@ -1,0 +1,127 @@
+name: Test specific version installation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install mock gh CLI and pre-built goose binary
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.local/bin
+
+          # Create a fake goose binary using python to avoid heredoc issues
+          python3 -c "
+          import os, stat
+          script = '#!/bin/bash\nif [ \"\$1\" = \"--version\" ]; then\n  echo \"goose 1.34.0\"\n  exit 0\nfi\necho \"goose mock\"\nexit 0\n'
+          with open('/tmp/goose-mock', 'w') as f:
+              f.write(script)
+          os.chmod('/tmp/goose-mock', 0o755)
+          "
+
+          # Create a tar.bz2 archive containing the goose binary
+          TMPDIR=$(mktemp -d)
+          cp /tmp/goose-mock "$TMPDIR/goose"
+          chmod +x "$TMPDIR/goose"
+          tar -cj -C "$TMPDIR" -f /tmp/goose-x86_64-unknown-linux-gnu.tar.bz2 goose
+          tar -cj -C "$TMPDIR" -f /tmp/goose-aarch64-unknown-linux-gnu.tar.bz2 goose
+          rm -rf "$TMPDIR"
+
+          # Create mock gh script using python to avoid heredoc nesting
+          python3 -c "
+          import os, stat
+          lines = [
+              '#!/bin/bash',
+              'ARGS=\"\$*\"',
+              'if echo \"\$ARGS\" | grep -q \"releases/latest\"; then',
+              '  echo \"v1.34.0\"',
+              '  exit 0',
+              'fi',
+              'if echo \"\$ARGS\" | grep -q \"release download\"; then',
+              '  DEST=\"\"',
+              '  PATTERN=\"\"',
+              '  args=(\"\$@\")',
+              '  for i in \"\${!args[@]}\"; do',
+              '    if [ \"\${args[\$i]}\" = \"-D\" ]; then DEST=\"\${args[\$(( i+1 ))]}\"; fi',
+              '    if [ \"\${args[\$i]}\" = \"--pattern\" ]; then PATTERN=\"\${args[\$(( i+1 ))]}\"; fi',
+              '  done',
+              '  if [ -n \"\$DEST\" ] && [ -n \"\$PATTERN\" ]; then',
+              '    mkdir -p \"\$DEST\"',
+              '    if [ -f \"/tmp/\$PATTERN\" ]; then',
+              '      cp \"/tmp/\$PATTERN\" \"\$DEST/\$PATTERN\"',
+              '    else',
+              '      cp /tmp/goose-x86_64-unknown-linux-gnu.tar.bz2 \"\$DEST/\$PATTERN\"',
+              '    fi',
+              '  fi',
+              '  exit 0',
+              'fi',
+              'if echo \"\$ARGS\" | grep -q \"attestation verify\"; then',
+              '  echo \"Attestation verification skipped (mock)\"',
+              '  exit 0',
+              'fi',
+              'echo \"mock gh: unhandled: \$ARGS\" >&2',
+              'exit 0',
+          ]
+          with open('/tmp/mock-gh', 'w') as f:
+              f.write('\n'.join(lines) + '\n')
+          os.chmod('/tmp/mock-gh', 0o755)
+          "
+
+          # Install mock gh - try sudo first, fall back to direct copy
+          if command -v sudo &>/dev/null; then
+            sudo cp /tmp/mock-gh /usr/local/bin/gh
+          else
+            cp /tmp/mock-gh /usr/local/bin/gh
+          fi
+          echo "Mock gh installed"
+
+      - id: action
+        uses: .
+        with:
+          version: '1.34.0'
+          check-latest: 'false'
+
+      - name: Assert goose-version output matches requested version
+        env:
+          ACTUAL: ${{ steps.action.outputs.goose-version }}
+        run: |
+          echo "actual: $ACTUAL"
+          if [ "$ACTUAL" != "1.34.0" ]; then
+            echo "FAIL: expected version '1.34.0', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Assert goose binary is on PATH
+        run: |
+          if ! command -v goose &>/dev/null; then
+            echo "FAIL: goose not found on PATH"
+            exit 1
+          fi
+          echo "goose found at: $(which goose)"
+          goose --version
+          echo "PASS"
+
+      - name: Assert goose-path output is set
+        env:
+          ACTUAL: ${{ steps.action.outputs.goose-path }}
+        run: |
+          echo "actual goose-path: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: goose-path output is empty"
+            exit 1
+          fi
+          echo "PASS: goose-path=$ACTUAL"
+
+      - name: Assert cache-hit output is a boolean string
+        env:
+          ACTUAL: ${{ steps.action.outputs.cache-hit }}
+        run: |
+          echo "actual cache-hit: $ACTUAL"
+          if [ "$ACTUAL" != "true" ] && [ "$ACTUAL" != "false" ]; then
+            echo "FAIL: cache-hit should be 'true' or 'false', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: cache-hit=$ACTUAL"
