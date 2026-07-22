@@ -1,0 +1,179 @@
+name: 'Setup Goose CLI'
+description: 'Install and cache Goose AI agent for GitHub Actions workflows'
+author: 'Hugues Clouâtre'
+keywords:
+  - ai
+  - ai-agent
+  - goose
+  - automation
+  - cli
+inputs:
+  version:
+    description: 'Version of Goose to install. Examples: 1.19.1, 1.15.0. Defaults to latest stable if unset. Ignored when check-latest is true.'
+    required: false
+    default: '1.19.1'
+  check-latest:
+    description: 'Fetch and install the absolute latest Goose release from GitHub. When true, the version input is ignored.'
+    required: false
+    default: 'false'
+outputs:
+  goose-version:
+    description: 'Installed Goose version'
+    value: ${{ steps.resolve-version.outputs.version }}
+  goose-path:
+    description: 'Path to Goose binary directory'
+    value: ${{ steps.setup-path.outputs.path }}
+  cache-hit:
+    description: 'Whether the Goose binary was restored from cache'
+    value: ${{ steps.cache-goose.outputs.cache-hit }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Check platform
+      shell: bash
+      env:
+        RUNNER_OS: ${{ runner.os }}
+      run: |
+        if [ "$RUNNER_OS" != "Linux" ]; then
+          echo "::error::This action only supports Linux runners. Current OS: $RUNNER_OS"
+          exit 1
+        fi
+    - name: Resolve version
+      id: resolve-version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_CHECK_LATEST: ${{ inputs.check-latest }}
+      run: |
+        VERSION="$INPUT_VERSION"
+
+        if [ "$INPUT_CHECK_LATEST" = "true" ]; then
+          echo "::group::Checking for latest Goose version"
+
+          # Query GitHub API for latest release using gh CLI
+          LATEST_TAG=$(gh api repos/block/goose/releases/latest --jq .tag_name)
+
+          if [ $? -ne 0 ]; then
+            echo "::error::Failed to query GitHub API for latest release"
+            exit 1
+          fi
+
+          # Remove 'v' prefix if present
+          LATEST_VERSION="${LATEST_TAG#v}"
+
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+            echo "::error::Failed to extract latest version from GitHub API response"
+            exit 1
+          fi
+
+          # Validate version format (supports pre-release tags like 1.20.0-beta)
+          if ! [[ "$LATEST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+            echo "::error::Invalid version format from API: '$LATEST_VERSION'"
+            exit 1
+          fi
+
+          echo "Latest version: $LATEST_VERSION"
+          VERSION="$LATEST_VERSION"
+          echo "::endgroup::"
+        fi
+
+        safe_version=$(printf '%s' "$VERSION" | tr -d '\n\r')
+        echo "version=$safe_version" >> "$GITHUB_OUTPUT"
+    - name: Cache Goose binary
+      id: cache-goose
+      uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
+      with:
+        path: ~/.local/bin/goose
+        key: goose-${{ steps.resolve-version.outputs.version }}-${{ runner.os }}-${{ runner.arch }}
+        restore-keys: |
+          goose-${{ steps.resolve-version.outputs.version }}-${{ runner.os }}-
+    - name: Install Goose
+      id: install
+      if: steps.cache-goose.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        RESOLVED_VERSION: ${{ steps.resolve-version.outputs.version }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        VERSION="$RESOLVED_VERSION"
+        echo "::group::Installing Goose v$VERSION"
+        mkdir -p ~/.local/bin
+
+        # Validate version format (semver: X.Y.Z or X.Y.Z-prerelease)
+        VERSION="${VERSION#v}"
+        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+          echo "::error::Invalid version format: '$VERSION'. Expected semver (e.g., 1.19.1 or 1.20.0-beta)"
+          exit 1
+        fi
+
+        # Determine architecture
+        ARCH="$RUNNER_ARCH"
+        if [ "$ARCH" = "X64" ]; then
+          GOOSE_ARCH="x86_64"
+        elif [ "$ARCH" = "ARM64" ]; then
+          GOOSE_ARCH="aarch64"
+        else
+          echo "::error::Unsupported architecture: $ARCH"
+          exit 1
+        fi
+
+        # Download and extract
+        DOWNLOAD_URL="https://github.com/block/goose/releases/download/v$VERSION/goose-${GOOSE_ARCH}-unknown-linux-gnu.tar.bz2"
+        echo "Downloading from: $DOWNLOAD_URL"
+
+        TEMP_TAR=$(mktemp)
+        trap "rm -f $TEMP_TAR" EXIT
+
+        if ! curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_TAR"; then
+          echo "::error::Failed to download Goose. Check version and network."
+          exit 1
+        fi
+
+        if [ ! -s "$TEMP_TAR" ]; then
+          echo "::error::Downloaded file is empty. Version $VERSION may not exist."
+          exit 1
+        fi
+
+        if ! tar -xj -C ~/.local/bin -f "$TEMP_TAR"; then
+          echo "::error::Failed to extract Goose binary."
+          exit 1
+        fi
+
+        chmod +x ~/.local/bin/goose
+
+        echo "::endgroup::"
+    - name: Setup PATH
+      id: setup-path
+      shell: bash
+      run: |
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        echo "path=$HOME/.local/bin" >> "$GITHUB_OUTPUT"
+    - name: Verify installation
+      shell: bash
+      run: |
+        echo "::group::Verifying Goose installation"
+        goose --version
+        echo "Installed binary:"
+        ls -lh ~/.local/bin/goose
+        echo "::endgroup::"
+branding:
+  icon: 'zap'
+  color: 'purple'

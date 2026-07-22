@@ -1,0 +1,145 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=github-releases depName=block/goose extractVersion=^v(?<version>.*)$
+  DEFAULT_GOOSE_VERSION: '1.15.0'
+
+jobs:
+  test-ubuntu:
+    name: Test on Ubuntu
+    if: github.event_name == 'push' || github.event.pull_request.draft == false || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Test action
+        uses: ./
+        id: goose
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Verify installation
+        env:
+          GOOSE_VERSION: ${{ steps.goose.outputs.goose-version }}
+          GOOSE_PATH: ${{ steps.goose.outputs.goose-path }}
+        run: |
+          echo "Goose version: $GOOSE_VERSION"
+          echo "Goose path: $GOOSE_PATH"
+          goose --version
+
+      - name: Test goose command
+        run: |
+          which goose
+          goose --help
+
+  test-cache:
+    name: Test caching
+    if: github.event_name == 'push' || github.event.pull_request.draft == false || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: First run (should install)
+        id: first-run
+        uses: ./
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Check cache-hit output exists
+        env:
+          CACHE_HIT: ${{ steps.first-run.outputs.cache-hit }}
+        run: |
+          if [ -z "$CACHE_HIT" ]; then
+            echo "::error::cache-hit output is empty"
+            exit 1
+          fi
+          echo "✓ cache-hit output is set to: '$CACHE_HIT'"
+
+      - name: Remove binary
+        run: rm ~/.local/bin/goose
+
+      - name: Second run (should restore from cache)
+        id: second-run
+        uses: ./
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Verify cache-hit is true on second run
+        env:
+          CACHE_HIT: ${{ steps.second-run.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" != "true" ]; then
+            echo "::error::Expected cache-hit='true' on second run, got '$CACHE_HIT'"
+            exit 1
+          fi
+          echo "✓ Second run cache-hit correctly reported as 'true'"
+
+      - name: Verify cache worked
+        run: goose --version
+
+  test-version:
+    name: Test different version
+    if: github.event_name == 'push' || github.event.pull_request.draft == false || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Test older version
+        uses: ./
+        with:
+          version: '1.11.0'
+
+      - name: Verify correct version
+        run: |
+          VERSION=$(goose --version)
+          echo "Installed: $VERSION"
+
+  test-check-latest:
+    name: Test check-latest input
+    if: github.event_name == 'push' || github.event.pull_request.draft == false || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Test with check-latest enabled
+        id: check-latest
+        uses: ./
+        with:
+          check-latest: true
+
+      - name: Verify latest version installed
+        env:
+          INSTALLED_VERSION: ${{ steps.check-latest.outputs.goose-version }}
+        run: |
+          echo "Installed version: $INSTALLED_VERSION"
+          
+          # Verify version format (supports pre-release tags)
+          if ! [[ "$INSTALLED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+            echo "::error::Invalid version format: '$INSTALLED_VERSION'"
+            exit 1
+          fi
+          
+          # Verify goose runs
+          goose --version
+          echo "✓ check-latest successfully installed version $INSTALLED_VERSION"
+
