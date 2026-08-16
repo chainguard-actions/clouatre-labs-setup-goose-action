@@ -18,7 +18,9 @@ jobs:
         uses: clouatre-labs/setup-goose-action@35f35c3a8f08aa333486693114938ec643bf8310  # v1.0.7
 
       - name: Generate Diff Stats
-        run: git diff --stat origin/${{ github.base_ref }}...HEAD > diff-stats.txt
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --stat "origin/$BASE_REF"...HEAD > diff-stats.txt
 
       - name: AI Analysis
         env:

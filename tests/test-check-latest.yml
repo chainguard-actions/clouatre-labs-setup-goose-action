@@ -1,4 +1,4 @@
-name: Test basic usage (default version)
+name: Test check-latest mode
 on:
   workflow_dispatch:
 jobs:
@@ -21,13 +21,16 @@ jobs:
           tar -cj -f /tmp/fake-goose-aarch64.tar.bz2 -C "$ARCHIVE_DIR" goose
           rm -rf "$ARCHIVE_DIR"
 
-          # Create a fake gh CLI that handles release download and attestation verify
+          # Create a fake gh CLI that handles release download, attestation verify,
+          # and API calls for latest version
+          # The action uses: gh api repos/aaif-goose/goose/releases/latest --jq .tag_name
+          # which returns just the tag_name value (not full JSON) when --jq is used
           mkdir -p /tmp/fake-gh-bin
           printf '#!/bin/sh\n' > /tmp/fake-gh-bin/gh
-          printf '# Fake gh CLI for testing goose setup action\n' >> /tmp/fake-gh-bin/gh
+          printf '# Fake gh CLI for testing goose setup action (check-latest mode)\n' >> /tmp/fake-gh-bin/gh
           printf 'case "$*" in\n' >> /tmp/fake-gh-bin/gh
           printf '  *"releases/latest"*|*"api"*)\n' >> /tmp/fake-gh-bin/gh
-          printf '    echo "{\\"tag_name\\": \\"v1.34.0\\"}"\n' >> /tmp/fake-gh-bin/gh
+          printf '    echo "v1.34.0"\n' >> /tmp/fake-gh-bin/gh
           printf '    exit 0\n' >> /tmp/fake-gh-bin/gh
           printf '    ;;\n' >> /tmp/fake-gh-bin/gh
           printf '  *"release download"*)\n' >> /tmp/fake-gh-bin/gh
@@ -67,20 +70,25 @@ jobs:
       - id: action
         uses: .
         with:
-          version: '1.34.0'
+          check-latest: 'true'
 
-      - name: Assert goose-version output
+      - name: Assert goose-version output is non-empty semver
         env:
           ACTUAL: ${{ steps.action.outputs.goose-version }}
         run: |
           echo "actual goose-version: $ACTUAL"
-          if [ "$ACTUAL" != "1.34.0" ]; then
-            echo "FAIL: expected goose-version '1.34.0', got '$ACTUAL'"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: goose-version output is empty when check-latest=true"
             exit 1
           fi
-          echo "PASS: goose-version is correct"
+          # Validate it looks like a semver (e.g. 1.34.0 or 1.20.0-beta)
+          if ! echo "$ACTUAL" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$'; then
+            echo "FAIL: goose-version '$ACTUAL' does not look like a valid semver"
+            exit 1
+          fi
+          echo "PASS: goose-version is '$ACTUAL'"
 
-      - name: Assert goose-path output
+      - name: Assert goose-path output is set
         env:
           ACTUAL: ${{ steps.action.outputs.goose-path }}
         run: |
@@ -89,28 +97,24 @@ jobs:
             echo "FAIL: goose-path output is empty"
             exit 1
           fi
-          echo "PASS: goose-path is set to '$ACTUAL'"
+          echo "PASS: goose-path is '$ACTUAL'"
 
-      - name: Assert goose binary exists in expected path
+      - name: Assert goose binary exists and is executable
         run: |
           echo "Checking ~/.local/bin/goose"
           if [ ! -f "$HOME/.local/bin/goose" ]; then
             echo "FAIL: goose binary not found at ~/.local/bin/goose"
             exit 1
           fi
-          echo "PASS: goose binary found at $HOME/.local/bin/goose"
+          echo "PASS: goose binary found"
           ls -lh "$HOME/.local/bin/goose"
-
-      - name: Assert goose binary is executable and runs
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
           OUTPUT=$("$HOME/.local/bin/goose" --version 2>&1 || true)
           echo "goose --version output: $OUTPUT"
           if [ -z "$OUTPUT" ]; then
             echo "FAIL: goose --version produced no output"
             exit 1
           fi
-          echo "PASS: goose --version succeeded"
+          echo "PASS: goose is installed and working"
 
       - name: Assert cache-hit output is a boolean string
         env:

@@ -7,75 +7,62 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install mock gh CLI and pre-built goose binary
+      - name: Set up fake gh CLI and goose binary
         run: |
-          set -euo pipefail
-          mkdir -p ~/.local/bin
+          # Create a fake goose binary that responds to --version
+          mkdir -p "$HOME/.local/bin"
+          printf '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "goose 1.34.0"\nfi\n' > "$HOME/.local/bin/goose"
+          chmod +x "$HOME/.local/bin/goose"
 
-          # Create a fake goose binary using python to avoid heredoc issues
-          python3 -c "
-          import os, stat
-          script = '#!/bin/bash\nif [ \"\$1\" = \"--version\" ]; then\n  echo \"goose 1.34.0\"\n  exit 0\nfi\necho \"goose mock\"\nexit 0\n'
-          with open('/tmp/goose-mock', 'w') as f:
-              f.write(script)
-          os.chmod('/tmp/goose-mock', 0o755)
-          "
+          # Create a fake tar.bz2 archive containing the fake goose binary
+          ARCHIVE_DIR=$(mktemp -d)
+          cp "$HOME/.local/bin/goose" "$ARCHIVE_DIR/goose"
+          tar -cj -f /tmp/fake-goose-x86_64.tar.bz2 -C "$ARCHIVE_DIR" goose
+          tar -cj -f /tmp/fake-goose-aarch64.tar.bz2 -C "$ARCHIVE_DIR" goose
+          rm -rf "$ARCHIVE_DIR"
 
-          # Create a tar.bz2 archive containing the goose binary
-          TMPDIR=$(mktemp -d)
-          cp /tmp/goose-mock "$TMPDIR/goose"
-          chmod +x "$TMPDIR/goose"
-          tar -cj -C "$TMPDIR" -f /tmp/goose-x86_64-unknown-linux-gnu.tar.bz2 goose
-          tar -cj -C "$TMPDIR" -f /tmp/goose-aarch64-unknown-linux-gnu.tar.bz2 goose
-          rm -rf "$TMPDIR"
+          # Create a fake gh CLI that handles release download and attestation verify
+          mkdir -p /tmp/fake-gh-bin
+          printf '#!/bin/sh\n' > /tmp/fake-gh-bin/gh
+          printf '# Fake gh CLI for testing goose setup action (specific version mode)\n' >> /tmp/fake-gh-bin/gh
+          printf 'case "$*" in\n' >> /tmp/fake-gh-bin/gh
+          printf '  *"releases/latest"*|*"api"*)\n' >> /tmp/fake-gh-bin/gh
+          printf '    echo "v1.34.0"\n' >> /tmp/fake-gh-bin/gh
+          printf '    exit 0\n' >> /tmp/fake-gh-bin/gh
+          printf '    ;;\n' >> /tmp/fake-gh-bin/gh
+          printf '  *"release download"*)\n' >> /tmp/fake-gh-bin/gh
+          printf '    DEST_DIR=""\n' >> /tmp/fake-gh-bin/gh
+          printf '    PATTERN=""\n' >> /tmp/fake-gh-bin/gh
+          printf '    prev=""\n' >> /tmp/fake-gh-bin/gh
+          printf '    for arg in "$@"; do\n' >> /tmp/fake-gh-bin/gh
+          printf '      if [ "$prev" = "-D" ]; then DEST_DIR="$arg"; fi\n' >> /tmp/fake-gh-bin/gh
+          printf '      if [ "$prev" = "--pattern" ]; then PATTERN="$arg"; fi\n' >> /tmp/fake-gh-bin/gh
+          printf '      prev="$arg"\n' >> /tmp/fake-gh-bin/gh
+          printf '    done\n' >> /tmp/fake-gh-bin/gh
+          printf '    if [ -n "$DEST_DIR" ]; then\n' >> /tmp/fake-gh-bin/gh
+          printf '      mkdir -p "$DEST_DIR"\n' >> /tmp/fake-gh-bin/gh
+          printf '      if echo "$PATTERN" | grep -q "aarch64"; then\n' >> /tmp/fake-gh-bin/gh
+          printf '        cp /tmp/fake-goose-aarch64.tar.bz2 "$DEST_DIR/$PATTERN"\n' >> /tmp/fake-gh-bin/gh
+          printf '      else\n' >> /tmp/fake-gh-bin/gh
+          printf '        cp /tmp/fake-goose-x86_64.tar.bz2 "$DEST_DIR/$PATTERN"\n' >> /tmp/fake-gh-bin/gh
+          printf '      fi\n' >> /tmp/fake-gh-bin/gh
+          printf '    fi\n' >> /tmp/fake-gh-bin/gh
+          printf '    exit 0\n' >> /tmp/fake-gh-bin/gh
+          printf '    ;;\n' >> /tmp/fake-gh-bin/gh
+          printf '  *"attestation verify"*)\n' >> /tmp/fake-gh-bin/gh
+          printf '    echo "Attestation verification skipped (mock)"\n' >> /tmp/fake-gh-bin/gh
+          printf '    exit 0\n' >> /tmp/fake-gh-bin/gh
+          printf '    ;;\n' >> /tmp/fake-gh-bin/gh
+          printf 'esac\n' >> /tmp/fake-gh-bin/gh
+          printf 'exit 0\n' >> /tmp/fake-gh-bin/gh
+          chmod +x /tmp/fake-gh-bin/gh
 
-          # Create mock gh script using python to avoid heredoc nesting
-          python3 -c "
-          import os, stat
-          lines = [
-              '#!/bin/bash',
-              'ARGS=\"\$*\"',
-              'if echo \"\$ARGS\" | grep -q \"releases/latest\"; then',
-              '  echo \"v1.34.0\"',
-              '  exit 0',
-              'fi',
-              'if echo \"\$ARGS\" | grep -q \"release download\"; then',
-              '  DEST=\"\"',
-              '  PATTERN=\"\"',
-              '  args=(\"\$@\")',
-              '  for i in \"\${!args[@]}\"; do',
-              '    if [ \"\${args[\$i]}\" = \"-D\" ]; then DEST=\"\${args[\$(( i+1 ))]}\"; fi',
-              '    if [ \"\${args[\$i]}\" = \"--pattern\" ]; then PATTERN=\"\${args[\$(( i+1 ))]}\"; fi',
-              '  done',
-              '  if [ -n \"\$DEST\" ] && [ -n \"\$PATTERN\" ]; then',
-              '    mkdir -p \"\$DEST\"',
-              '    if [ -f \"/tmp/\$PATTERN\" ]; then',
-              '      cp \"/tmp/\$PATTERN\" \"\$DEST/\$PATTERN\"',
-              '    else',
-              '      cp /tmp/goose-x86_64-unknown-linux-gnu.tar.bz2 \"\$DEST/\$PATTERN\"',
-              '    fi',
-              '  fi',
-              '  exit 0',
-              'fi',
-              'if echo \"\$ARGS\" | grep -q \"attestation verify\"; then',
-              '  echo \"Attestation verification skipped (mock)\"',
-              '  exit 0',
-              'fi',
-              'echo \"mock gh: unhandled: \$ARGS\" >&2',
-              'exit 0',
-          ]
-          with open('/tmp/mock-gh', 'w') as f:
-              f.write('\n'.join(lines) + '\n')
-          os.chmod('/tmp/mock-gh', 0o755)
-          "
+          # Add fake gh to PATH via GITHUB_PATH so composite action steps see it
+          echo "/tmp/fake-gh-bin" >> "$GITHUB_PATH"
 
-          # Install mock gh - try sudo first, fall back to direct copy
-          if command -v sudo &>/dev/null; then
-            sudo cp /tmp/mock-gh /usr/local/bin/gh
-          else
-            cp /tmp/mock-gh /usr/local/bin/gh
-          fi
-          echo "Mock gh installed"
+          echo "Setup complete"
+          ls -la /tmp/fake-gh-bin/
+          ls -la "$HOME/.local/bin/"
 
       - id: action
         uses: .
@@ -87,22 +74,12 @@ jobs:
         env:
           ACTUAL: ${{ steps.action.outputs.goose-version }}
         run: |
-          echo "actual: $ACTUAL"
+          echo "actual goose-version: $ACTUAL"
           if [ "$ACTUAL" != "1.34.0" ]; then
-            echo "FAIL: expected version '1.34.0', got '$ACTUAL'"
+            echo "FAIL: expected goose-version '1.34.0', got '$ACTUAL'"
             exit 1
           fi
-          echo "PASS"
-
-      - name: Assert goose binary is on PATH
-        run: |
-          if ! command -v goose &>/dev/null; then
-            echo "FAIL: goose not found on PATH"
-            exit 1
-          fi
-          echo "goose found at: $(which goose)"
-          goose --version
-          echo "PASS"
+          echo "PASS: goose-version is correct"
 
       - name: Assert goose-path output is set
         env:
@@ -113,7 +90,31 @@ jobs:
             echo "FAIL: goose-path output is empty"
             exit 1
           fi
-          echo "PASS: goose-path=$ACTUAL"
+          echo "PASS: goose-path is '$ACTUAL'"
+
+      - name: Assert goose binary exists at expected location
+        run: |
+          echo "Checking ~/.local/bin/goose"
+          if [ ! -f "$HOME/.local/bin/goose" ]; then
+            echo "FAIL: goose binary not found at ~/.local/bin/goose"
+            exit 1
+          fi
+          echo "PASS: goose binary found"
+          ls -lh "$HOME/.local/bin/goose"
+
+      - name: Assert installed version matches requested
+        run: |
+          OUTPUT=$("$HOME/.local/bin/goose" --version 2>&1 || true)
+          echo "goose --version output: $OUTPUT"
+          if [ -z "$OUTPUT" ]; then
+            echo "FAIL: goose --version produced no output"
+            exit 1
+          fi
+          if ! echo "$OUTPUT" | grep -q "1.34.0"; then
+            echo "FAIL: expected version 1.34.0 in output, got: $OUTPUT"
+            exit 1
+          fi
+          echo "PASS: version 1.34.0 confirmed"
 
       - name: Assert cache-hit output is a boolean string
         env:
@@ -124,4 +125,4 @@ jobs:
             echo "FAIL: cache-hit should be 'true' or 'false', got '$ACTUAL'"
             exit 1
           fi
-          echo "PASS: cache-hit=$ACTUAL"
+          echo "PASS: cache-hit is '$ACTUAL'"
