@@ -1,0 +1,174 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'src/**'
+      - '.github/workflows/test.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=github-releases depName=aaif-goose/goose extractVersion=^v(?<version>.*)$
+  DEFAULT_GOOSE_VERSION: '1.30.0'
+
+jobs:
+  test-ubuntu:
+    name: Test on Ubuntu
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Test action
+        uses: ./
+        id: goose
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Verify installation
+        run: |
+          echo "Goose version: ${{ steps.goose.outputs.goose-version }}"
+          echo "Goose path: ${{ steps.goose.outputs.goose-path }}"
+          goose --version
+
+      - name: Test goose command
+        run: |
+          which goose
+          goose --help
+
+  test-cache-install:
+    name: Test caching (install)
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install (cache miss expected)
+        id: install
+        uses: ./
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Verify cache-hit output is set
+        run: |
+          CACHE_HIT="${{ steps.install.outputs.cache-hit }}"
+          if [ "$CACHE_HIT" != "true" ] && [ "$CACHE_HIT" != "false" ]; then
+            echo "::error::cache-hit must be 'true' or 'false', got '$CACHE_HIT'"
+            exit 1
+          fi
+          echo "✓ cache-hit output is '$CACHE_HIT'"
+
+  test-cache-restore:
+    name: Test caching (restore)
+    needs: test-cache-install
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Restore (cache hit expected)
+        id: restore
+        uses: ./
+        with:
+          version: ${{ env.DEFAULT_GOOSE_VERSION }}
+
+      - name: Verify cache-hit is true on restore
+        run: |
+          if [ "${{ steps.restore.outputs.cache-hit }}" != "true" ]; then
+            echo "::error::Expected cache-hit='true' on restore, got '${{ steps.restore.outputs.cache-hit }}'"
+            exit 1
+          fi
+          echo "✓ cache-hit correctly reported as 'true' on restore"
+
+      - name: Verify binary works after cache restore
+        run: goose --version
+
+  test-version:
+    name: Test different version
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Test older version
+        uses: ./
+        with:
+          version: '1.30.0'
+
+      - name: Verify correct version
+        run: |
+          VERSION=$(goose --version)
+          echo "Installed: $VERSION"
+
+  test-check-latest:
+    name: Test check-latest input
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Test with check-latest enabled
+        id: check-latest
+        uses: ./
+        with:
+          check-latest: true
+
+      - name: Verify latest version installed
+        run: |
+          INSTALLED_VERSION="${{ steps.check-latest.outputs.goose-version }}"
+          echo "Installed version: $INSTALLED_VERSION"
+          
+          # Verify version format (supports pre-release tags)
+          if ! [[ "$INSTALLED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+            echo "::error::Invalid version format: '$INSTALLED_VERSION'"
+            exit 1
+          fi
+          
+          # Verify goose runs
+          goose --version
+          echo "✓ check-latest successfully installed version $INSTALLED_VERSION"
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e # v0.5.3
+        with:
+          advanced-security: false
+          annotations: true
+          min-severity: high
+
+  ci-result:
+    name: CI Result
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [test-ubuntu, test-cache-install, test-cache-restore, test-version, test-check-latest, zizmor]
+    permissions: {}
+    steps:
+      - name: Verify all jobs passed or were skipped
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more CI jobs failed or were cancelled."
+            exit 1
+          fi
+          echo "All CI jobs passed or were skipped."
+

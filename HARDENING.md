@@ -8,38 +8,47 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
-Action **clouatre-labs--setup-goose-action/v1.0.8** was hardened automatically. 4 finding(s) were identified and resolved across 1 iteration(s).
+Action **clouatre-labs--setup-goose-action/v1.0.8** was hardened automatically. 5 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple ${{ }} expressions are directly interpolated inside run: shell command strings.
-
-1. 'Check platform' step: `${{ runner.os }}` is interpolated directly in the run: block on lines 36-37. Even though runner.os is GitHub-controlled, any ${{ }} in a run: block is a script-injection finding per the check rules.
-
-2. 'Resolve version' step: `${{ inputs.version }}` (line 47) and `${{ inputs.check-latest }}` (line 49) are attacker-controlled inputs interpolated directly into shell commands. A calling workflow or pull request can supply arbitrary values including shell metacharacters. The `# zizmor: ignore[template-injection]` comment suppresses the linter but does not fix the vulnerability.
-
-3. 'Install Goose' step: `${{ steps.resolve-version.outputs.version }}` (line 93) and `${{ runner.arch }}` (line 102) are interpolated directly in the run: block.
+Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell command strings in action.yml. This includes attacker-controlled inputs (${{ inputs.version }}, ${{ inputs.check-latest }}) and context values that flow through YAML template substitution before the shell sees them (${{ runner.os }}, ${{ runner.arch }}, ${{ steps.resolve-version.outputs.version }}). Any of these can contain shell metacharacters that will be interpreted by the shell. The '# zizmor: ignore[template-injection]' comment on the Resolve version step does not fix the underlying injection. Offending lines include: `VERSION="${{ inputs.version }}"`, `if [ "${{ inputs.check-latest }}" = "true" ]`, `if [ "${{ runner.os }}" != "Linux" ]`, `VERSION="${{ steps.resolve-version.outputs.version }}"`, `ARCH="${{ runner.arch }}"`.
 
 Locations:
 
-- `action.yml:36`
-- `action.yml:37`
-- `action.yml:47`
-- `action.yml:49`
-- `action.yml:93`
-- `action.yml:102`
+- `action.yml:30`
+- `action.yml:31`
+- `action.yml:40`
+- `action.yml:43`
+- `action.yml:72`
+- `action.yml:82`
 
 ### github-env-injection (severity: high)
 
-The 'Resolve version' step writes VERSION to $GITHUB_OUTPUT without sanitization. VERSION is initialized from `${{ inputs.version }}` (an untrusted, caller-controlled input). Although the script validates the version format with a regex, it does not apply the required sanitization pipeline (`printf '%s' "$VERSION" | tr -d '\n\r'`) immediately before the write `echo "version=$VERSION" >> $GITHUB_OUTPUT`. A newline embedded in the input could inject additional key=value pairs into GITHUB_OUTPUT.
+The 'Resolve version' step in action.yml writes VERSION to $GITHUB_OUTPUT without sanitization. VERSION is derived directly from ${{ inputs.version }}, an attacker-controlled input. A malicious caller could supply a value containing newlines to inject arbitrary key=value pairs into GITHUB_OUTPUT (e.g., `version=injected\nother_key=malicious`). The required sanitization step (`printf '%s' "$VERSION" | tr -d '\n\r'`) is absent before the write: `echo "version=$VERSION" >> $GITHUB_OUTPUT`.
 
 Locations:
 
-- `action.yml:79`
+- `action.yml:68`
+
+### script-injection (severity: high)
+
+Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell command strings in .github/workflows/test.yml. Affected steps include: 'Verify installation' (`echo "Goose version: ${{ steps.goose.outputs.goose-version }}"`), 'Verify cache-hit output is set' (`CACHE_HIT="${{ steps.install.outputs.cache-hit }}"`), 'Verify cache-hit is true on restore' (`if [ "${{ steps.restore.outputs.cache-hit }}" != "true" ]` and the error message), 'Verify latest version installed' (`INSTALLED_VERSION="${{ steps.check-latest.outputs.goose-version }}"`), and 'Verify all jobs passed or were skipped' (`if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]`). These values flow through YAML template substitution before the shell processes them and can contain shell metacharacters.
+
+Locations:
+
+- `.github/workflows/test.yml:35`
+- `.github/workflows/test.yml:36`
+- `.github/workflows/test.yml:57`
+- `.github/workflows/test.yml:80`
+- `.github/workflows/test.yml:82`
+- `.github/workflows/test.yml:113`
+- `.github/workflows/test.yml:152`
+- `.github/workflows/test.yml:155`
 
 ### static-inline-injection (severity: high)
 
@@ -65,5 +74,10 @@ Locations:
 
 **Notes:**
 
-Fixed all findings in action.yml: (1) Moved ${{ runner.os }} to env block as RUNNER_OS in 'Check platform' step. (2) Moved ${{ inputs.version }} and ${{ inputs.check-latest }} to env block as INPUT_VERSION and INPUT_CHECK_LATEST in 'Resolve version' step. (3) Moved ${{ steps.resolve-version.outputs.version }} and ${{ runner.arch }} to env block as RESOLVED_VERSION and RUNNER_ARCH in 'Install Goose' step. (4) Added sanitization pipeline (printf '%s' "$VERSION" | tr -d '\n\r') before writing version to $GITHUB_OUTPUT to prevent newline injection.
+Fixed all findings in action.yml:
+1. Check platform step: moved ${{ runner.os }} to env: RUNNER_OS, referenced as $RUNNER_OS in shell.
+2. Resolve version step: moved ${{ inputs.version }} to env: INPUT_VERSION and ${{ inputs.check-latest }} to env: INPUT_CHECK_LATEST; sanitized GITHUB_OUTPUT write with `printf '%s' "$VERSION" | tr -d '\n\r'` before writing version output.
+3. Install Goose step: moved ${{ steps.resolve-version.outputs.version }} to env: RESOLVED_VERSION and ${{ runner.arch }} to env: RUNNER_ARCH, both referenced as plain shell variables.
+
+The .github/workflows/test.yml script-injection findings were not fixed per the rules that state 'Security fixes go to action.yml and supporting scripts only' and test files should not be modified.
 

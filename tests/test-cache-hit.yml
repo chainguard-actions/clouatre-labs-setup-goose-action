@@ -1,0 +1,120 @@
+name: Test cache-hit output
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install gh CLI if not present
+        run: |
+          if ! command -v gh &>/dev/null; then
+            echo "Installing gh CLI..."
+            type -p curl >/dev/null || (apt-get update && apt-get install -y curl)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            apt-get update
+            apt-get install -y gh
+          else
+            echo "gh CLI already installed: $(gh --version)"
+          fi
+
+      # First run: install Goose (cache miss expected on fresh runner)
+      - id: first-run
+        uses: .
+        with:
+          version: '1.33.1'
+
+      - name: Assert first run cache-hit output is set
+        env:
+          ACTUAL: ${{ steps.first-run.outputs.cache-hit }}
+        run: |
+          echo "first-run cache-hit: $ACTUAL"
+          # cache-hit must be either 'true' or 'false'
+          if [ "$ACTUAL" != "true" ] && [ "$ACTUAL" != "false" ]; then
+            echo "FAIL: cache-hit should be 'true' or 'false', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: cache-hit is '$ACTUAL'"
+
+      - name: Assert first run goose-version
+        env:
+          ACTUAL: ${{ steps.first-run.outputs.goose-version }}
+        run: |
+          echo "first-run goose-version: $ACTUAL"
+          if [ "$ACTUAL" != "1.33.1" ]; then
+            echo "FAIL: expected '1.33.1' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Assert first run goose-path
+        env:
+          ACTUAL: ${{ steps.first-run.outputs.goose-path }}
+        run: |
+          echo "first-run goose-path: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: goose-path is empty"
+            exit 1
+          fi
+          echo "PASS: goose-path=$ACTUAL"
+
+      - name: Assert goose binary works after first run
+        run: |
+          if ! command -v goose &>/dev/null; then
+            echo "FAIL: goose not found on PATH after first run"
+            exit 1
+          fi
+          GOOSE_VER=$(goose --version 2>&1 || true)
+          echo "goose --version: $GOOSE_VER"
+          if ! echo "$GOOSE_VER" | grep -q "1.33.1"; then
+            echo "FAIL: expected version 1.33.1 in output but got: $GOOSE_VER"
+            exit 1
+          fi
+          echo "PASS: goose works correctly after first run"
+
+      # Second run: same version — the binary is already in ~/.local/bin so cache should hit
+      - id: second-run
+        uses: .
+        with:
+          version: '1.33.1'
+
+      - name: Assert second run outputs are valid
+        env:
+          VERSION: ${{ steps.second-run.outputs.goose-version }}
+          PATH_OUT: ${{ steps.second-run.outputs.goose-path }}
+          CACHE: ${{ steps.second-run.outputs.cache-hit }}
+        run: |
+          echo "second-run goose-version: $VERSION"
+          echo "second-run goose-path: $PATH_OUT"
+          echo "second-run cache-hit: $CACHE"
+          if [ "$VERSION" != "1.33.1" ]; then
+            echo "FAIL: expected goose-version '1.33.1' but got '$VERSION'"
+            exit 1
+          fi
+          if [ -z "$PATH_OUT" ]; then
+            echo "FAIL: goose-path is empty on second run"
+            exit 1
+          fi
+          # cache-hit must be either 'true' or 'false'
+          if [ "$CACHE" != "true" ] && [ "$CACHE" != "false" ]; then
+            echo "FAIL: cache-hit should be 'true' or 'false', got '$CACHE'"
+            exit 1
+          fi
+          echo "PASS: all second-run outputs are valid"
+
+      - name: Assert goose binary still works after second run
+        run: |
+          if ! command -v goose &>/dev/null; then
+            echo "FAIL: goose not found on PATH after second run"
+            exit 1
+          fi
+          GOOSE_VER=$(goose --version 2>&1 || true)
+          echo "goose --version: $GOOSE_VER"
+          if ! echo "$GOOSE_VER" | grep -q "1.33.1"; then
+            echo "FAIL: expected version 1.33.1 in output but got: $GOOSE_VER"
+            exit 1
+          fi
+          echo "PASS: goose works correctly after second run"
