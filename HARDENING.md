@@ -10,44 +10,41 @@
 
 **Harden Agent Version:** `2`
 
-Action **clouatre-labs--setup-goose-action/v1.0.10** was hardened automatically. 5 finding(s) were identified and resolved across 3 iteration(s).
+Action **clouatre-labs--setup-goose-action/v1.0.10** was hardened automatically. 6 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell commands in action.yml. In the 'Check platform' step, ${{ runner.os }} is embedded directly in the shell script. In the 'Resolve version' step, ${{ inputs.version }} and ${{ inputs.check-latest }} are interpolated directly (the zizmor ignore comment does not fix the vulnerability). In the 'Install Goose' step, ${{ steps.resolve-version.outputs.version }} and ${{ runner.arch }} are interpolated directly. Any of these values flowing through YAML template substitution before the shell sees them can allow shell metacharacter injection.
+Sub-rule (a): The 'Check platform' step directly interpolates ${{ runner.os }} inside a run: shell script. Any ${{ }} expression inside a run: block is a script-injection risk because the value is substituted into the shell command string before the shell parses it. Offending lines: `if [ "${{ runner.os }}" != "Linux" ]; then` and `echo "::error::This action only supports Linux runners. Current OS: ${{ runner.os }}"`
 
 Locations:
 
-- `action.yml:31`
-- `action.yml:32`
-- `action.yml:38`
-- `action.yml:40`
-- `action.yml:82`
-- `action.yml:92`
+- `action.yml:35`
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell commands in the workflow file. In 'Verify installation', ${{ steps.goose.outputs.goose-version }} and ${{ steps.goose.outputs.goose-path }} are embedded in echo commands. In 'Verify cache-hit output is set', ${{ steps.install.outputs.cache-hit }} is assigned inside the shell script. In 'Verify cache-hit is true on restore', ${{ steps.restore.outputs.cache-hit }} appears in an if-condition and an error message. In 'Verify latest version installed', ${{ steps.check-latest.outputs.goose-version }} is assigned inside the shell. In 'Verify all jobs passed or were skipped', ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }} is interpolated directly into an if-condition.
+Sub-rule (a): The 'Resolve version' step directly interpolates attacker-controlled inputs ${{ inputs.version }} and ${{ inputs.check-latest }} inside a run: shell script. These values are supplied by the calling workflow and can contain shell metacharacters. Offending lines: `VERSION="${{ inputs.version }}"` and `if [ "${{ inputs.check-latest }}" = "true" ]; then`
 
 Locations:
 
-- `.github/workflows/test.yml:36`
-- `.github/workflows/test.yml:37`
-- `.github/workflows/test.yml:48`
-- `.github/workflows/test.yml:72`
-- `.github/workflows/test.yml:74`
-- `.github/workflows/test.yml:115`
-- `.github/workflows/test.yml:155`
+- `action.yml:46`
+
+### script-injection (severity: high)
+
+Sub-rule (a): The 'Install Goose' step directly interpolates ${{ steps.resolve-version.outputs.version }} and ${{ runner.arch }} inside a run: shell script. Both are ${{ }} expressions substituted into the shell before parsing. Offending lines: `VERSION="${{ steps.resolve-version.outputs.version }}"` and `ARCH="${{ runner.arch }}"`
+
+Locations:
+
+- `action.yml:96`
 
 ### github-env-injection (severity: high)
 
-In the 'Resolve version' step of action.yml, the shell variable VERSION is set from the untrusted input ${{ inputs.version }} and then written to $GITHUB_OUTPUT without the required sanitization step (printf '%s' "$VERSION" | tr -d '\n\r'). An attacker-controlled version input containing newlines could inject arbitrary key=value pairs into GITHUB_OUTPUT, potentially poisoning subsequent steps. The offending line is: `echo "version=$VERSION" >> $GITHUB_OUTPUT`
+The 'Resolve version' step writes the shell variable VERSION to $GITHUB_OUTPUT without sanitization. VERSION is derived directly from the untrusted input ${{ inputs.version }} (set as `VERSION="${{ inputs.version }}"`). An attacker-controlled value containing newlines could inject arbitrary key=value pairs into GITHUB_OUTPUT. The required sanitization step (`printf '%s' "$VERSION" | tr -d '\n\r'`) is absent before the write: `echo "version=$VERSION" >> $GITHUB_OUTPUT`
 
 Locations:
 
-- `action.yml:68`
+- `action.yml:75`
 
 ### static-inline-injection (severity: high)
 
@@ -73,38 +70,8 @@ Locations:
 
 **Notes:**
 
-Fixed all script injection issues in action.yml:
-1. 'Check platform' step: moved ${{ runner.os }} to env var RUNNER_OS
-2. 'Resolve version' step: moved ${{ inputs.version }} to INPUT_VERSION and ${{ inputs.check-latest }} to INPUT_CHECK_LATEST in env block; removed zizmor ignore comment
-3. 'Resolve version' step: sanitized VERSION before writing to GITHUB_OUTPUT using printf '%s' "$VERSION" | tr -d '\n\r', and quoted $GITHUB_OUTPUT
-4. 'Install Goose' step: moved ${{ steps.resolve-version.outputs.version }} to RESOLVED_VERSION and ${{ runner.arch }} to RUNNER_ARCH in env block
-
-The .github/workflows/test.yml findings were not fixed as that file is a test harness and per the rules, security fixes should only be applied to action.yml and supporting scripts that are part of the distributed action.
-
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed all 7 script injection instances in hardened/action/.github/workflows/test.yml by moving ${{ ... }} expressions into step-level env: blocks and referencing them as plain shell environment variables:
-1. 'Verify installation' step: moved steps.goose.outputs.goose-version and steps.goose.outputs.goose-path to GOOSE_VERSION and GOOSE_PATH env vars
-2. 'Verify cache-hit output is set' step: moved steps.install.outputs.cache-hit to CACHE_HIT env var (also removed redundant inline assignment)
-3. 'Verify cache-hit is true on restore' step: moved steps.restore.outputs.cache-hit to CACHE_HIT env var (both occurrences replaced)
-4. 'Verify latest version installed' step: moved steps.check-latest.outputs.goose-version to INSTALLED_VERSION env var (also removed redundant inline assignment)
-5. 'Verify all jobs passed or were skipped' step: moved contains(needs.*.result, ...) expression to CI_FAILED env var
-
-### Iteration 3
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed two script-injection findings involving `${{ github.base_ref }}` being directly interpolated into `run:` shell commands:
-
-1. `examples/tier2-balanced-security.yml` (line 21): Added `env: BASE_REF: ${{ github.base_ref }}` to the 'Generate Diff Stats' step and changed the run command from `git diff --stat origin/${{ github.base_ref }}...HEAD` to `git diff --stat "origin/$BASE_REF"...HEAD`.
-
-2. `examples/tier3-advanced-patterns.yml` (line 33): Added `BASE_REF: ${{ github.base_ref }}` to the existing `env:` block of the 'AI Diff Review' step and changed `git diff origin/${{ github.base_ref }}...HEAD` to `git diff "origin/$BASE_REF"...HEAD`.
-
-In both cases the attacker-controlled value is now passed through an environment variable and double-quoted in the shell, preventing shell metacharacter injection.
+Fixed all script-injection and github-env-injection findings in action.yml:
+1. 'Check platform' step: moved ${{ runner.os }} to RUNNER_OS env var, referenced as $RUNNER_OS in shell.
+2. 'Resolve version' step: moved ${{ inputs.version }} to INPUT_VERSION and ${{ inputs.check-latest }} to INPUT_CHECK_LATEST env vars; removed zizmor ignore comment since injection is now properly fixed; added `safe_version=$(printf '%s' "$VERSION" | tr -d '\n\r')` sanitization before writing to GITHUB_OUTPUT.
+3. 'Install Goose' step: moved ${{ steps.resolve-version.outputs.version }} to RESOLVED_VERSION and ${{ runner.arch }} to RUNNER_ARCH env vars, referenced as $RESOLVED_VERSION and $RUNNER_ARCH in shell.
 
