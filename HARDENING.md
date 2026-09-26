@@ -10,45 +10,45 @@
 
 **Harden Agent Version:** `2`
 
-Action **clouatre-labs--setup-goose-action/v1.0.8** was hardened automatically. 5 finding(s) were identified and resolved across 1 iteration(s).
+Action **clouatre-labs--setup-goose-action/v1.0.8** was hardened automatically. 6 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell command strings in action.yml. This includes attacker-controlled inputs (${{ inputs.version }}, ${{ inputs.check-latest }}) and context values that flow through YAML template substitution before the shell sees them (${{ runner.os }}, ${{ runner.arch }}, ${{ steps.resolve-version.outputs.version }}). Any of these can contain shell metacharacters that will be interpreted by the shell. The '# zizmor: ignore[template-injection]' comment on the Resolve version step does not fix the underlying injection. Offending lines include: `VERSION="${{ inputs.version }}"`, `if [ "${{ inputs.check-latest }}" = "true" ]`, `if [ "${{ runner.os }}" != "Linux" ]`, `VERSION="${{ steps.resolve-version.outputs.version }}"`, `ARCH="${{ runner.arch }}"`.
+Sub-rule (a): The 'Check platform' step directly interpolates `${{ runner.os }}` inside the `run:` shell script on lines 39 and 40. Any `${{ ... }}` expression inside a `run:` block is subject to YAML template substitution before the shell sees it, making it a script-injection risk regardless of whether the context appears GitHub-controlled.
 
 Locations:
 
-- `action.yml:30`
-- `action.yml:31`
+- `action.yml:39`
 - `action.yml:40`
-- `action.yml:43`
-- `action.yml:72`
-- `action.yml:82`
-
-### github-env-injection (severity: high)
-
-The 'Resolve version' step in action.yml writes VERSION to $GITHUB_OUTPUT without sanitization. VERSION is derived directly from ${{ inputs.version }}, an attacker-controlled input. A malicious caller could supply a value containing newlines to inject arbitrary key=value pairs into GITHUB_OUTPUT (e.g., `version=injected\nother_key=malicious`). The required sanitization step (`printf '%s' "$VERSION" | tr -d '\n\r'`) is absent before the write: `echo "version=$VERSION" >> $GITHUB_OUTPUT`.
-
-Locations:
-
-- `action.yml:68`
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple ${{ }} expressions are interpolated directly inside run: shell command strings in .github/workflows/test.yml. Affected steps include: 'Verify installation' (`echo "Goose version: ${{ steps.goose.outputs.goose-version }}"`), 'Verify cache-hit output is set' (`CACHE_HIT="${{ steps.install.outputs.cache-hit }}"`), 'Verify cache-hit is true on restore' (`if [ "${{ steps.restore.outputs.cache-hit }}" != "true" ]` and the error message), 'Verify latest version installed' (`INSTALLED_VERSION="${{ steps.check-latest.outputs.goose-version }}"`), and 'Verify all jobs passed or were skipped' (`if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]`). These values flow through YAML template substitution before the shell processes them and can contain shell metacharacters.
+Sub-rule (a): The 'Resolve version' step directly interpolates `${{ inputs.version }}` (line 50) and `${{ inputs.check-latest }}` (line 52) inside the `run:` shell script. Both are attacker-controlled inputs that flow through YAML template substitution before the shell executes them, enabling command injection. The `# zizmor: ignore[template-injection]` comment is a linter suppression annotation, not a security fix.
 
 Locations:
 
-- `.github/workflows/test.yml:35`
-- `.github/workflows/test.yml:36`
-- `.github/workflows/test.yml:57`
-- `.github/workflows/test.yml:80`
-- `.github/workflows/test.yml:82`
-- `.github/workflows/test.yml:113`
-- `.github/workflows/test.yml:152`
-- `.github/workflows/test.yml:155`
+- `action.yml:50`
+- `action.yml:52`
+
+### script-injection (severity: high)
+
+Sub-rule (a): The 'Install Goose' step directly interpolates `${{ steps.resolve-version.outputs.version }}` (line 92) and `${{ runner.arch }}` (line 102) inside the `run:` shell script. These expressions are substituted by the YAML template engine before the shell executes the script, bypassing shell quoting and enabling injection.
+
+Locations:
+
+- `action.yml:92`
+- `action.yml:102`
+
+### github-env-injection (severity: high)
+
+The 'Resolve version' step sets `VERSION="${{ inputs.version }}"` (line 50) — an attacker-controlled input — and then writes it to `$GITHUB_OUTPUT` on line 73 via `echo "version=$VERSION" >> $GITHUB_OUTPUT` without the required sanitization step (`printf '%s' "$VERSION" | tr -d '\n\r'`). A malicious value containing newlines could inject arbitrary key=value pairs into GITHUB_OUTPUT, poisoning subsequent steps.
+
+Locations:
+
+- `action.yml:50`
+- `action.yml:73`
 
 ### static-inline-injection (severity: high)
 
@@ -74,10 +74,8 @@ Locations:
 
 **Notes:**
 
-Fixed all findings in action.yml:
-1. Check platform step: moved ${{ runner.os }} to env: RUNNER_OS, referenced as $RUNNER_OS in shell.
-2. Resolve version step: moved ${{ inputs.version }} to env: INPUT_VERSION and ${{ inputs.check-latest }} to env: INPUT_CHECK_LATEST; sanitized GITHUB_OUTPUT write with `printf '%s' "$VERSION" | tr -d '\n\r'` before writing version output.
-3. Install Goose step: moved ${{ steps.resolve-version.outputs.version }} to env: RESOLVED_VERSION and ${{ runner.arch }} to env: RUNNER_ARCH, both referenced as plain shell variables.
-
-The .github/workflows/test.yml script-injection findings were not fixed per the rules that state 'Security fixes go to action.yml and supporting scripts only' and test files should not be modified.
+Fixed all script-injection and github-env-injection findings in action.yml:
+1. 'Check platform' step: moved `${{ runner.os }}` to env block as RUNNER_OS.
+2. 'Resolve version' step: moved `${{ inputs.version }}` and `${{ inputs.check-latest }}` to env block as INPUT_VERSION and INPUT_CHECK_LATEST; sanitized VERSION with `printf '%s' "$VERSION" | tr -d '\n\r'` before writing to GITHUB_OUTPUT; removed the now-unnecessary zizmor suppression comment.
+3. 'Install Goose' step: moved `${{ steps.resolve-version.outputs.version }}` and `${{ runner.arch }}` to env block as RESOLVED_VERSION and RUNNER_ARCH.
 
